@@ -1,0 +1,247 @@
+const HTTP_HEADER = makeHTTPHeader(); //Do this only once.
+const SERIAL_NUMBER_NAME = "Serial Number";
+const DEVICE_ID_NAME = "Device ID";
+const DEVICE_NAME_NAME = "Device Name";
+const FIRST_NAME = "User first name";
+const LAST_NAME = "User last name";
+
+function onOpen(event) {
+  createMenus();
+}
+
+/**
+ * Called when "populateSimplemMDMdata" menu item selected.
+ * Iterate the sheet's serial numbers and populate each device's device ID and device name from SimpleMDM.
+ */
+function populateSimplemMDMdata() {
+  const simpleMDMdevices = retrieveDevices(); //retrieveIpads();
+  const serialToSimpleMDMdataMap = makeSerialToSimpleMDMdataMap(simpleMDMdevices);
+
+  const sheetData = new SheetData();
+  const serialNumbers = sheetData.getRowValuesFor(SERIAL_NUMBER_NAME);
+
+  for (let row = 0; row < serialNumbers.length; row++) {
+    let simpleMDMdata = serialToSimpleMDMdataMap.get(serialNumbers[row]);
+    if (simpleMDMdata != undefined) {
+      sheetData.setValueFor(DEVICE_ID_NAME, row + 2, simpleMDMdata.deviceId); //2 = header + 1 offset.
+      sheetData.setValueFor(DEVICE_NAME_NAME, row + 2, simpleMDMdata.deviceName);
+    }
+    else {
+      Logger.log(`${DEVICE_ID_NAME} not found for ${SERIAL_NUMBER_NAME} ${serialNumbers[row]}`);
+    }
+  }
+}
+
+function updateDeviceName() {
+  const ui = SpreadsheetApp.getUi();
+  const sheetData = new SheetData();
+  const deviceId = sheetData.getValueOnCurrentRowFor(DEVICE_ID_NAME);
+  if (deviceId == null || deviceId == "") {
+    ui.alert(`Device ID not found for Serial Number ${sheetData.getValueOnCurrentRowFor(SERIAL_NUMBER_NAME)}`);
+  }
+  else if (deviceId != DEVICE_ID_NAME) {
+    const fullName = sheetData.getValueOnCurrentRowFor(FIRST_NAME) + " " + sheetData.getValueOnCurrentRowFor(LAST_NAME);
+    const result = patchDeviceName(deviceId, fullName);
+    ui.alert(`Update result: ${result}`);
+  }
+}
+
+/**
+ * Add "SimpleMDM" menus to Sheet interface.
+ */
+function createMenus() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu("SimpleMDM")
+    .addItem("Update SimpleMDM device name using First and Last name", "updateDeviceName")
+    .addSeparator()
+    .addItem("Populate device ids and device names from SimpleMDM", "populateSimplemMDMdata")
+    .addToUi();
+}
+
+// /**
+//  * retrieve_devices(), then filter out everything but iPads.
+//  * @returns Object[]
+//  */
+// function retrieveIpads() {
+//   let devices = retrieveDevices();
+//   devices = devices.filter(device => {
+//     return (device.attributes.model_name.startsWith("iPad"));
+//   });
+//   return devices;
+// }
+
+/**
+ * Use SimpleMDM API to retrieve all devices.
+ * The API can retrieve a maximum of 100 devices, so it is
+ * called repeatedly until has no more devices.
+ * We're also only retrieving enrolled devices.
+ * @returns Object[]
+ */
+function retrieveDevices() {
+  const RETRIEVAL_LIMIT = 100; //100 is SimpleMDM's max.
+  const params = ["limit=" + RETRIEVAL_LIMIT/*, "include_awaiting_enrollment=true"*/];
+  const options = {
+    method: "get",
+    headers: HTTP_HEADER,
+    muteHttpExceptions: false
+  };
+  const baseUrl = "https://a.simplemdm.com/api/v1/devices?" + params.join("&");
+
+  let devices = [];
+  let hasMore = true;
+  let startingAfter = 0;
+  while (hasMore) {
+    let url = baseUrl + "&starting_after=" + startingAfter;
+    let response = UrlFetchApp.fetch(url, options);
+      let content = JSON.parse(response.getContentText());
+      Logger.log(`Retrieved ${content.data.length} devices (${content.data[0].id}-${content.data[content.data.length - 1].id})`);
+      devices = devices.concat(content.data); //The array of devices are under the name "data".
+      hasMore = content.has_more;
+      startingAfter = content.data[content.data.length - 1].id; //Get the last retrieved id.
+  }
+
+  return devices;
+}
+
+// function retrieveDevice(deviceId) {
+//   const params = ["include_awaiting_enrollment=true"];
+//   const options = {
+//     method: "get",
+//     headers: HTTP_HEADER,
+//     muteHttpExceptions: false
+//   };
+//   const url = "https://a.simplemdm.com/api/v1/devices/" + deviceId + "?" + params.join("&");
+//   const response = UrlFetchApp.fetch(url, options);
+//   const content = JSON.parse(response.getContentText());
+//   Logger.log(`Retrieved serial number ${content.data.attributes.serial_number}`);
+//   return content.data;
+// }
+
+function patchDeviceName(deviceId, name) {
+  let returnMessage;
+
+  const params = ["name=" + name, "device_name=" + name];
+  const options = {
+    method: "patch",
+    headers: HTTP_HEADER,
+    muteHttpExceptions: false
+  };
+  const url = "https://a.simplemdm.com/api/v1/devices/" + deviceId + "?" + params.join("&");
+  const response = UrlFetchApp.fetch(url, options);
+
+  let content = JSON.parse(response.getContentText());
+
+  if (response.getResponseCode() == 200) {
+    returnMessage = "Success";
+  }
+  else if (content.errors != undefined) {
+    returnMessage = content.errors[0].title;
+  }
+
+  Logger.log(`Patched serial number ${content?.data?.attributes?.serial_number} name=${content?.data?.attributes?.name}, device name ${content?.data?.attributes?.device_name}. return message: ${returnMessage}`);
+  return returnMessage;
+}
+
+/**
+ * Creates map of serial numbers to SimpleMDMDatas.
+ * @returns Map
+ */
+function makeSerialToSimpleMDMdataMap(devices) {
+  const map = new Map();
+
+  devices.forEach(device => {
+    let serialNumber = device.attributes.serial_number;
+    if (map.has(serialNumber)) {
+      Logger.log(`Duplicate serial number ${serialNumber} for device id ${device.id}`);
+    }
+    else {
+      map.set(serialNumber, new SimpleMDMData(device.id, device.attributes.device_name));
+    }
+  });
+
+  return map;
+}
+
+/**
+ * Exposes data for the Active Sheet.
+ */
+class SheetData {
+  constructor() {
+    this.sheet = SpreadsheetApp.getActiveSheet();
+    const headingValues = this._getHeadingValues();
+    this._headingMap = new Map();
+    headingValues.forEach((headingValue, index) => {
+      this._headingMap.set(headingValue, index + 1);
+    });
+    this._totalRows = this.sheet.getLastRow();
+  }
+
+  _getHeadingValues() {
+    const headingRange = this.sheet.getRange(1, 1, 1, this.sheet.getLastColumn());
+    const headingValues = headingRange.getValues()[0];
+    Logger.log(`_getHeadingValues() returning ${headingValues}`);
+    return headingValues;
+  }
+
+  /**
+   * Returns all the row values in columnName.
+   * @param {string} Column whose row values we want
+   * @returns any[]
+   */
+  getRowValuesFor(columnName) {
+    const columnNumber = this._headingMap.get(columnName);
+    const columnRange = this.sheet.getRange(2, columnNumber, this._totalRows, 1);
+    //columnRange's array is several rows, but one column.
+    //values is a 2-dimensional array, indexed by row, then by column.
+    const values = columnRange.getValues();
+    //We want a single-dimension array of just the row values.
+    const rowValues = values.map(value => value[0]);
+    //Logger.log(`getRowValuesFor(${columnName}) returning ${rowValues}`);
+    return rowValues;
+  }
+
+  /**
+   * Set the value for cell in columnName, at rowNumber.
+   * @param {string} columnName
+   * @param {number} rowNumber
+   * @param {any} value
+   */
+  setValueFor(columnName, rowNumber, value) {
+    const columnNumber = this._headingMap.get(columnName);
+    const cell = this.sheet.getRange(rowNumber, columnNumber, 1, 1);
+    //Logger.log(`setValueFor(${columnName},${rowNumber},${value})`);
+    cell.setValue(value);
+  }
+
+  getValueOnCurrentRowFor(columnName) {
+    let value = null;
+    const currentRange = this.sheet.getCurrentCell();
+
+    if (currentRange != null) {
+      const currentRowNum = currentRange.getRow();
+      const columnNumber = this._headingMap.get(columnName);
+      const cellRange = this.sheet.getRange(currentRowNum, columnNumber, 1, 1);
+      value = cellRange.getValue();
+    }
+
+    Logger.log(`getValueOnCurrentRowFor(${columnName}) returning ${value}`);
+    return value;
+  }
+}
+
+class SimpleMDMData {
+  constructor(deviceId, deviceName) {
+    this.deviceId = deviceId;
+    this.deviceName = deviceName;
+  }
+}
+
+/**
+ * @returns String
+ */
+function makeHTTPHeader() {
+  const apiKey = "EBxI8BgAov9jY4gh60KJzPtU2fVCSanskjS9G4WYQ3219yupy7Yca8ZJENh2Z6x3";
+  const authString = Utilities.base64Encode(apiKey + ":");
+  const headerObject = {"Authorization": "Basic " + authString};
+  return headerObject;
+}
