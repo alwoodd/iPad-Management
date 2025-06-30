@@ -2,6 +2,7 @@ const HTTP_HEADER = makeHTTPHeader(); //Do this only once.
 const SERIAL_NUMBER_NAME = "Serial Number";
 const DEVICE_ID_NAME = "Device ID";
 const DEVICE_NAME_NAME = "Device Name";
+const IN_MDM_NAME = "In MDM?";
 const FIRST_NAME = "User first name";
 const LAST_NAME = "User last name";
 
@@ -12,26 +13,57 @@ function onOpen(event) {
 /**
  * Called when "populateSimplemMDMdata" menu item selected.
  * Iterate the sheet's serial numbers and populate each device's device ID and device name from SimpleMDM.
+ * Also add any SimpleMDM iPads not in the sheet.
  */
 function populateSimplemMDMdata() {
-  const simpleMDMdevices = retrieveDevices(); //retrieveIpads();
+  const simpleMDMdevices = retrieveIpads();
   const serialToSimpleMDMdataMap = makeSerialToSimpleMDMdataMap(simpleMDMdevices);
 
   const sheetData = new SheetData();
-  const serialNumbers = sheetData.getRowValuesFor(SERIAL_NUMBER_NAME);
+  const sheetSerialNumbers = sheetData.getRowValuesFor(SERIAL_NUMBER_NAME);
+  Logger.log(`${sheetSerialNumbers.length} data rows found in the sheet.`);
 
-  for (let row = 0; row < serialNumbers.length; row++) {
-    let simpleMDMdata = serialToSimpleMDMdataMap.get(serialNumbers[row]);
+  /**
+   * Iterate serial numbers from the sheet, and lookup each within the serialToSimpleMDMdataMap.
+   * Use the simpleMDMdata from the map to populate the DEVICE_ID_NAME, DEVICE_NAME_NAME, and IN_MDM_NAME.
+   */
+  for (let row = 0; row < sheetSerialNumbers.length; row++) {
+    let isInMDM = "Yes";
+    let simpleMDMdata = serialToSimpleMDMdataMap.get(sheetSerialNumbers[row]);
     if (simpleMDMdata != undefined) {
       sheetData.setValueFor(DEVICE_ID_NAME, row + 2, simpleMDMdata.deviceId); //2 = header + 1 offset.
       sheetData.setValueFor(DEVICE_NAME_NAME, row + 2, simpleMDMdata.deviceName);
     }
     else {
-      Logger.log(`${DEVICE_ID_NAME} not found for ${SERIAL_NUMBER_NAME} ${serialNumbers[row]}`);
+      Logger.log(`${DEVICE_ID_NAME} not found for ${SERIAL_NUMBER_NAME} ${sheetSerialNumbers[row]}`);
+      isInMDM = "No";
     }
+
+    sheetData.setValueFor(IN_MDM_NAME, row + 2, isInMDM);
   }
+
+  /**
+   * Look for serial numbers in the serialToSimpleMDMdataMap that need to be added to the sheet.
+   */
+  const sheetSerialSet = new Set(sheetSerialNumbers);
+  Logger.log(`${sheetSerialSet.size} unique serial numbers in the sheet.`);
+
+  let totalAdded = 0;
+  serialToSimpleMDMdataMap.forEach(mDMdata => {
+    if (!sheetSerialSet.has(mDMdata.serialNumber)) {
+      mDMdata[IN_MDM_NAME] = "Yes";
+      sheetData.addRow(mDMdata);
+      totalAdded++;
+    }
+  });
+  SpreadsheetApp.getUi().alert(`${totalAdded} device(s) added to the sheet.`);
 }
 
+/**
+ * Called when "updateDeviceName" menu item selected.
+ * If the current sheet row has a device ID, update SimpleMDM's device name using
+ * the row's first and last name values.
+ */
 function updateDeviceName() {
   const ui = SpreadsheetApp.getUi();
   const sheetData = new SheetData();
@@ -39,6 +71,7 @@ function updateDeviceName() {
   if (deviceId == null || deviceId == "") {
     ui.alert(`Device ID not found for Serial Number ${sheetData.getValueOnCurrentRowFor(SERIAL_NUMBER_NAME)}`);
   }
+  //Skip if on heading row
   else if (deviceId != DEVICE_ID_NAME) {
     const fullName = sheetData.getValueOnCurrentRowFor(FIRST_NAME) + " " + sheetData.getValueOnCurrentRowFor(LAST_NAME);
     const result = patchDeviceName(deviceId, fullName);
@@ -52,29 +85,28 @@ function updateDeviceName() {
 function createMenus() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu("SimpleMDM")
-    .addItem("Update SimpleMDM device name using First and Last name", "updateDeviceName")
+    .addItem("Set SimpleMDM device name using First and Last name", "updateDeviceName")
     .addSeparator()
-    .addItem("Populate device ids and device names from SimpleMDM", "populateSimplemMDMdata")
+    .addItem("Add SimpleMDM data", "populateSimplemMDMdata")
     .addToUi();
 }
 
-// /**
-//  * retrieve_devices(), then filter out everything but iPads.
-//  * @returns Object[]
-//  */
-// function retrieveIpads() {
-//   let devices = retrieveDevices();
-//   devices = devices.filter(device => {
-//     return (device.attributes.model_name.startsWith("iPad"));
-//   });
-//   return devices;
-// }
+/**
+ * retrieve_devices(), then filter out everything but iPads.
+ * @returns Object[]
+ */
+function retrieveIpads() {
+  let devices = retrieveDevices();
+  devices = devices.filter(device => {
+    return (device.attributes.model_name.startsWith("iPad"));
+  });
+  return devices;
+}
 
 /**
- * Use SimpleMDM API to retrieve all devices.
+ * Use SimpleMDM API to retrieve all devices not awaiting enrollment.
  * The API can retrieve a maximum of 100 devices, so it is
  * called repeatedly until has no more devices.
- * We're also only retrieving enrolled devices.
  * @returns Object[]
  */
 function retrieveDevices() {
@@ -143,7 +175,7 @@ function patchDeviceName(deviceId, name) {
 }
 
 /**
- * Creates map of serial numbers to SimpleMDMDatas.
+ * Creates map of serial numbers to MDMDatas.
  * @returns Map
  */
 function makeSerialToSimpleMDMdataMap(devices) {
@@ -155,7 +187,7 @@ function makeSerialToSimpleMDMdataMap(devices) {
       Logger.log(`Duplicate serial number ${serialNumber} for device id ${device.id}`);
     }
     else {
-      map.set(serialNumber, new SimpleMDMData(device.id, device.attributes.device_name));
+      map.set(serialNumber, new MDMData(device.id, device.attributes.device_name, serialNumber));
     }
   });
 
@@ -173,9 +205,12 @@ class SheetData {
     headingValues.forEach((headingValue, index) => {
       this._headingMap.set(headingValue, index + 1);
     });
-    this._totalRows = this.sheet.getLastRow();
+    this._totalDataRows = this.sheet.getLastRow() - 1; //Skip heading row.
   }
 
+  /**
+   * @returns string[] of headings.
+   */
   _getHeadingValues() {
     const headingRange = this.sheet.getRange(1, 1, 1, this.sheet.getLastColumn());
     const headingValues = headingRange.getValues()[0];
@@ -184,18 +219,18 @@ class SheetData {
   }
 
   /**
-   * Returns all the row values in columnName.
+   * Returns all the row values in the passed columnName.
    * @param {string} Column whose row values we want
    * @returns any[]
    */
   getRowValuesFor(columnName) {
     const columnNumber = this._headingMap.get(columnName);
-    const columnRange = this.sheet.getRange(2, columnNumber, this._totalRows, 1);
+    const columnRange = this.sheet.getRange(2, columnNumber, this._totalDataRows, 1);
     //columnRange's array is several rows, but one column.
     //values is a 2-dimensional array, indexed by row, then by column.
     const values = columnRange.getValues();
     //We want a single-dimension array of just the row values.
-    const rowValues = values.map(value => value[0]);
+    let rowValues = values.map(value => value[0]);
     //Logger.log(`getRowValuesFor(${columnName}) returning ${rowValues}`);
     return rowValues;
   }
@@ -213,6 +248,11 @@ class SheetData {
     cell.setValue(value);
   }
 
+  /**
+   * Get the cell value located on the current cell's row and the column of the passed columnName.
+   * @param {string} columnName
+   * @returns {any} value
+   */
   getValueOnCurrentRowFor(columnName) {
     let value = null;
     const currentRange = this.sheet.getCurrentCell();
@@ -227,12 +267,37 @@ class SheetData {
     Logger.log(`getValueOnCurrentRowFor(${columnName}) returning ${value}`);
     return value;
   }
+
+/**
+ * Create and add a row to the sheet using the passed mDmData.
+ * @param {MDMData} mDmData
+ */
+  addRow(mDmData) {
+    //Create an array to be used to populate the new row.
+    let columnValues = [];
+    //Iterate the keys (the headings). If the heading is found as an mDmData property,
+    //push that value to the array. Otherwise, push "".
+    this._headingMap.forEach((columnNumber, headingValue) => {
+      columnValues.push(mDmData[headingValue] == undefined? "" : mDmData[headingValue]);
+    });
+
+    Logger.log(`addRow() adding ${columnValues}`);
+    this.sheet.appendRow(columnValues);
+  }
 }
 
-class SimpleMDMData {
-  constructor(deviceId, deviceName) {
+/**
+ * Data we care about for a given SimpleMDM device.
+ * Properties are in both dot and [] notation.
+ */
+class MDMData {
+  constructor(deviceId, deviceName, serialNumber) {
     this.deviceId = deviceId;
     this.deviceName = deviceName;
+    this.serialNumber = serialNumber;
+    this[DEVICE_ID_NAME] = deviceId;
+    this[DEVICE_NAME_NAME] = deviceName;
+    this[SERIAL_NUMBER_NAME] = serialNumber;
   }
 }
 
