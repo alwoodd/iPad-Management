@@ -75,6 +75,7 @@ function updateDeviceName() {
   else if (deviceId != DEVICE_ID_NAME) {
     const fullName = sheetData.getValueOnCurrentRowFor(FIRST_NAME) + " " + sheetData.getValueOnCurrentRowFor(LAST_NAME);
     const result = patchDeviceName(deviceId, fullName);
+    sheetData.setValueFor(DEVICE_NAME_NAME, sheetData.getCurrentRowNumber(), fullName);
     ui.alert(`Update result: ${result}`);
   }
 }
@@ -268,10 +269,19 @@ class SheetData {
     return value;
   }
 
-/**
- * Create and add a row to the sheet using the passed mDmData.
- * @param {MDMData} mDmData
- */
+  /**
+   * Gets the row number of the currently selected cell.
+   * @returns {integer}
+   */
+  getCurrentRowNumber() {
+    const currentRange = this.sheet.getCurrentCell();
+    return currentRange.getRow();
+  }
+
+  /**
+   * Create and add a row to the sheet using the passed mDmData.
+   * @param {MDMData} mDmData
+   */
   addRow(mDmData) {
     //Create an array to be used to populate the new row.
     let columnValues = [];
