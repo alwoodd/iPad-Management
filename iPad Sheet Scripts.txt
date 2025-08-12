@@ -105,7 +105,7 @@ function retrieveIpads() {
 }
 
 /**
- * Use SimpleMDM API to retrieve all devices not awaiting enrollment.
+ * Use SimpleMDM API to retrieve all devices.
  * The API can retrieve a maximum of 100 devices, so it is
  * called repeatedly until has no more devices.
  * @returns Object[]
