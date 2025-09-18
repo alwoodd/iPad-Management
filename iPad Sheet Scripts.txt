@@ -5,6 +5,9 @@ const DEVICE_NAME_NAME = "Device Name";
 const IN_MDM_NAME = "In MDM?";
 const FIRST_NAME = "User first name";
 const LAST_NAME = "User last name";
+const GROUPS_NAME = "Groups";
+const DEFAULT_DEVICE_NAME = "iPad";
+const ALL_STUDENTS_GROUP = "All Students";
 
 function onOpen(event) {
   createMenus();
@@ -19,6 +22,9 @@ function populateSimplemMDMdata() {
   const simpleMDMdevices = retrieveIpads();
   const serialToSimpleMDMdataMap = makeSerialToSimpleMDMdataMap(simpleMDMdevices);
 
+  const simpleMDMgroups = retrieveGroups();
+  const groupIdToNameMap = makeGroupIdToNameMap(simpleMDMgroups);
+
   const sheetData = new SheetData();
   const sheetSerialNumbers = sheetData.getRowValuesFor(SERIAL_NUMBER_NAME);
   Logger.log(`${sheetSerialNumbers.length} data rows found in the sheet.`);
@@ -31,8 +37,11 @@ function populateSimplemMDMdata() {
     let isInMDM = "Yes";
     let simpleMDMdata = serialToSimpleMDMdataMap.get(sheetSerialNumbers[row]);
     if (simpleMDMdata != undefined) {
-      sheetData.setValueFor(DEVICE_ID_NAME, row + 2, simpleMDMdata.deviceId); //2 = header + 1 offset.
-      sheetData.setValueFor(DEVICE_NAME_NAME, row + 2, simpleMDMdata.deviceName);
+      let rowNumber = row + 2; //2 = header + 1 offset.
+      sheetData.setValueFor(DEVICE_ID_NAME, rowNumber, simpleMDMdata.deviceId);
+      sheetData.setValueFor(DEVICE_NAME_NAME, rowNumber, simpleMDMdata.deviceName);
+      let groupNames = getGroupNames(simpleMDMdata.groupIds, groupIdToNameMap);
+      sheetData.setValueFor(GROUPS_NAME, rowNumber, groupNames);
     }
     else {
       Logger.log(`${DEVICE_ID_NAME} not found for ${SERIAL_NUMBER_NAME} ${sheetSerialNumbers[row]}`);
@@ -81,19 +90,121 @@ function updateDeviceName() {
 }
 
 /**
+ * Set device name to DEFAULT_DEVICE_NAME.
+ * Clear out FIRST_NAME, LAST_NAME sheetfields.
+ */
+function clearDeviceName() {
+  const ui = SpreadsheetApp.getUi();
+  const sheetData = new SheetData();
+  const deviceId = sheetData.getValueOnCurrentRowFor(DEVICE_ID_NAME);
+  if (deviceId == null || deviceId == "") {
+    ui.alert(`Device ID not found for Serial Number ${sheetData.getValueOnCurrentRowFor(SERIAL_NUMBER_NAME)}`);
+  }
+  //Skip if on heading row
+  else if (deviceId != DEVICE_ID_NAME) {
+    const result = patchDeviceName(deviceId, DEFAULT_DEVICE_NAME);
+    const currentRowNumber = sheetData.getCurrentRowNumber();
+    sheetData.setValueFor(DEVICE_NAME_NAME, currentRowNumber, DEFAULT_DEVICE_NAME);
+    sheetData.setValueFor(FIRST_NAME, currentRowNumber, "");
+    sheetData.setValueFor(LAST_NAME, currentRowNumber, "");
+    ui.alert(`Clear result: ${result}`);
+  }
+}
+
+/**
+ * Called when "updateFirstLastName" menu item selected.
+ * If the current sheet row has a device ID, update the row's first and last name values
+ * using the DEVICE_NAME_NAME on the same row.
+ */
+function updateFirstLastName() {
+  const ui = SpreadsheetApp.getUi();
+  const sheetData = new SheetData();
+  const deviceId = sheetData.getValueOnCurrentRowFor(DEVICE_ID_NAME);
+  if (deviceId == null || deviceId == "") {
+    ui.alert(`Device ID not found for Serial Number ${sheetData.getValueOnCurrentRowFor(SERIAL_NUMBER_NAME)}`);
+  }
+  //Skip if on heading row
+  else if (deviceId != DEVICE_ID_NAME) {
+    const deviceName = sheetData.getValueOnCurrentRowFor(DEVICE_NAME_NAME);
+    const nameArray = deviceName.split(" ");
+    sheetData.setValueFor(FIRST_NAME, sheetData.getCurrentRowNumber(), nameArray[0]);
+    sheetData.setValueFor(LAST_NAME, sheetData.getCurrentRowNumber(), nameArray[1]);
+  }
+}
+
+/**
+ * Add the device to ALL_STUDENTS_GROUP, and remove the device from all other groups.
+ */
+function moveDeviceToAllStudents() {
+  const sheetData = new SheetData();
+  const deviceId = sheetData.getValueOnCurrentRowFor(DEVICE_ID_NAME);
+  if (deviceId == null || deviceId == "") {
+    SpreadsheetApp.getUi().alert(`Device ID not found for Serial Number ${sheetData.getValueOnCurrentRowFor(SERIAL_NUMBER_NAME)}`);
+  }
+  //Skip if on heading row
+  else if (deviceId != DEVICE_ID_NAME) {
+    const device = retrieveDevice(deviceId);
+    if (device != null) {
+      const mdmData = new MDMData(device);
+      const allStudentGroupId = getAllStudentsGroupId();
+      if (allStudentGroupId != null) {
+        /**
+         * If allStudentGroupId is not already in mdmData.groupIds,
+         * add allStudentGroupId to the device, then unassign all other groups
+         * from the device.
+         * If allStudentGroupId is already assigned, do nothing.
+         */
+        if (!mdmData.groupIds.includes(allStudentGroupId)) {
+          postAssignmentGroup(mdmData.deviceId, allStudentGroupId);
+
+          const nonAllStudentsGroupIds = mdmData.groupIds.filter(groupId => groupId != allStudentGroupId);
+          nonAllStudentsGroupIds.forEach(groupId => deleteAssignmentGroup(mdmData.deviceId, groupId));
+
+          //This is a bit risky, as either postAssignmentGroup() or deleteAssignmentGroup()
+          //could have failed. An alternative is to re-retrieveDevice();
+          sheetData.setValueFor(GROUPS_NAME, sheetData.getCurrentRowNumber(), ALL_STUDENTS_GROUP);
+        }
+      } //All Students group found
+    } //Device found
+  } //Not on heading row
+}
+
+function openWikiPage() {
+  //"What they are, how to use" page
+  const url = "https://youneedawiki.com/app/page/1FwrxfoY5EPJIYJ5i_LO1TlhO9CP1QKvUnohunBz5lZY?p=1rR9EQ-OmYh04c-kMsEQ4Bg2irU4NFGiW";
+  
+  const html = HtmlService.createHtmlOutput(
+    `<script>
+       window.open("${url}", "_blank");
+       google.script.host.close();
+     </script>`
+  )
+  .setWidth(10)
+  .setHeight(10);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'Opening...');
+}
+
+/**
  * Add "SimpleMDM" menus to Sheet interface.
  */
 function createMenus() {
   const ui = SpreadsheetApp.getUi();
   ui.createMenu("SimpleMDM")
-    .addItem("Set SimpleMDM device name using First and Last name", "updateDeviceName")
+    .addItem("Assign device the First and Last name", "updateDeviceName")
+    .addItem("Set First and Last name using SimpleMDM device name", "updateFirstLastName")
+    .addItem("Clear device and First and Last names", "clearDeviceName")
     .addSeparator()
-    .addItem("Add SimpleMDM data", "populateSimplemMDMdata")
+    .addItem("Move device to All Students group", "moveDeviceToAllStudents")
+    .addSeparator()
+    .addItem("Update sheet with SimpleMDM data", "populateSimplemMDMdata")
+    .addSeparator()
+    .addItem("Help", "openWikiPage")
     .addToUi();
 }
 
 /**
- * retrieve_devices(), then filter out everything but iPads.
+ * retrieveDevices(), then filter out everything but iPads.
  * @returns Object[]
  */
 function retrieveIpads() {
@@ -105,51 +216,90 @@ function retrieveIpads() {
 }
 
 /**
- * Use SimpleMDM API to retrieve all devices.
- * The API can retrieve a maximum of 100 devices, so it is
- * called repeatedly until has no more devices.
- * @returns Object[]
+ * Use retrieveItems() to retrieve all devices.
  */
 function retrieveDevices() {
+  const baseUrl = "https://a.simplemdm.com/api/v1/devices";
+  Logger.log("Retrieving devices");
+  const devices = retrieveItems(baseUrl);
+  return devices;
+}
+
+/**
+ * Use retrieveItems() to retrieve all groups.
+ */
+function retrieveGroups() {
+  const baseUrl = "https://a.simplemdm.com/api/v1/assignment_groups";
+  Logger.log("Retrieving groups");
+  const groups = retrieveItems(baseUrl);
+  return groups;
+}
+
+/**
+ * Use SimpleMDM API to retrieve all items per the baseUrl.
+ * The API can retrieve a maximum of 100 devices, so it is
+ * called repeatedly until has no more devices.
+ * @param {string} baseUrl
+ * @returns Object[]
+ */
+function retrieveItems(baseUrl) {
   const RETRIEVAL_LIMIT = 100; //100 is SimpleMDM's max.
-  const params = ["limit=" + RETRIEVAL_LIMIT/*, "include_awaiting_enrollment=true"*/];
+  const params = ["limit=" + RETRIEVAL_LIMIT];
   const options = {
     method: "get",
     headers: HTTP_HEADER,
     muteHttpExceptions: false
   };
-  const baseUrl = "https://a.simplemdm.com/api/v1/devices?" + params.join("&");
 
-  let devices = [];
+  baseUrl += ("?" + params.join("&"));
+
+  let items = [];
   let hasMore = true;
   let startingAfter = 0;
   while (hasMore) {
     let url = baseUrl + "&starting_after=" + startingAfter;
     let response = UrlFetchApp.fetch(url, options);
       let content = JSON.parse(response.getContentText());
-      Logger.log(`Retrieved ${content.data.length} devices (${content.data[0].id}-${content.data[content.data.length - 1].id})`);
-      devices = devices.concat(content.data); //The array of devices are under the name "data".
+      Logger.log(`Retrieved ${content.data.length} items (${content.data[0].id}-${content.data[content.data.length - 1].id})`);
+      items = items.concat(content.data); //The array of devices are under the name "data".
       hasMore = content.has_more;
       startingAfter = content.data[content.data.length - 1].id; //Get the last retrieved id.
   }
 
-  return devices;
+  return items;
 }
 
-// function retrieveDevice(deviceId) {
-//   const params = ["include_awaiting_enrollment=true"];
-//   const options = {
-//     method: "get",
-//     headers: HTTP_HEADER,
-//     muteHttpExceptions: false
-//   };
-//   const url = "https://a.simplemdm.com/api/v1/devices/" + deviceId + "?" + params.join("&");
-//   const response = UrlFetchApp.fetch(url, options);
-//   const content = JSON.parse(response.getContentText());
-//   Logger.log(`Retrieved serial number ${content.data.attributes.serial_number}`);
-//   return content.data;
-// }
+/**
+ * Retrieve a single device
+ * @param {number} deviceId 
+ * @returns object
+ */
+function retrieveDevice(deviceId) {
+  const options = {
+    method: "get",
+    headers: HTTP_HEADER,
+    muteHttpExceptions: false
+  };
+  const url = "https://a.simplemdm.com/api/v1/devices/" + deviceId;
+  const response = UrlFetchApp.fetch(url, options);
+  const content = JSON.parse(response.getContentText());
 
+  if (response.getResponseCode() == 200) {
+    Logger.log(`Retrieved serial number ${content.data.attributes.serial_number}`);
+    return content.data;
+  }
+  else {
+    Logger.log(`Unable to retrieve deviceId ${deviceId}. HTTP response code ${content.getResponseCode()}`);
+    return null;
+  }
+}
+
+/**
+ * Use SimpleMDM API to PATCH the name and device_name using the passed name.
+ * @param {number} deviceId 
+ * @param {string} name 
+ * @returns string containing Success or failure message.
+ */
 function patchDeviceName(deviceId, name) {
   let returnMessage;
 
@@ -176,6 +326,46 @@ function patchDeviceName(deviceId, name) {
 }
 
 /**
+ * Use SimpleMDM API to add a device to an assignment group.
+ * @param {number} deviceId
+ * @param {number} assignmentGroupId 
+ */
+function postAssignmentGroup(deviceId, assignmentGroupId) {
+  const options = {
+    method: "post",
+    headers: HTTP_HEADER,
+    muteHttpExceptions: false
+  };
+  const url = "https://a.simplemdm.com/api/v1/assignment_groups/" + assignmentGroupId + "/devices/" + deviceId;
+  const response = UrlFetchApp.fetch(url, options);
+
+  //No content text with this call.
+  //let content = JSON.parse(response.getContentText());
+
+  Logger.log(`Posted assignment groupId ${assignmentGroupId} to deviceId ${deviceId}. HTTP response code ${response.getResponseCode()}`);
+}
+
+/**
+ * Use SimpleMDM API to delete a device from an assignment group.
+ * @param {number} deviceId
+ * @param {number} assignmentGroupId 
+ */
+function deleteAssignmentGroup(deviceId, assignmentGroupId) {
+  const options = {
+    method: "delete",
+    headers: HTTP_HEADER,
+    muteHttpExceptions: false
+  };
+  const url = "https://a.simplemdm.com/api/v1/assignment_groups/" + assignmentGroupId + "/devices/" + deviceId;
+  const response = UrlFetchApp.fetch(url, options);
+
+  //No content text with this call.
+  //let content = JSON.parse(response.getContentText());
+
+  Logger.log(`Deleted assignment groupId ${assignmentGroupId} from deviceId ${deviceId}. HTTP response code ${response.getResponseCode()}`);
+}
+
+/**
  * Creates map of serial numbers to MDMDatas.
  * @returns Map
  */
@@ -188,11 +378,56 @@ function makeSerialToSimpleMDMdataMap(devices) {
       Logger.log(`Duplicate serial number ${serialNumber} for device id ${device.id}`);
     }
     else {
-      map.set(serialNumber, new MDMData(device.id, device.attributes.device_name, serialNumber));
+      map.set(serialNumber, new MDMData(device));
     }
   });
 
   return map;
+}
+
+/**
+ * Creates map of group IDs to group names.
+ * @return Map
+ */
+function makeGroupIdToNameMap(groups) {
+  const map = new Map();
+
+  groups.forEach(group => {
+    map.set(group.id, group.attributes.name);
+  });
+
+  return map;
+}
+
+/**
+ * Convert the passed groupIds into a comma-delimited string of group names.
+ * @param {number[]} groupIds 
+ * @param {Map} groupIdToNameMap 
+ * @returns string
+ */
+function getGroupNames(groupIds, groupIdToNameMap) {
+    const groupNames = groupIds.map(groupId => groupIdToNameMap.get(groupId));
+    const groupNameStr = groupNames.join();
+    return groupNameStr;
+}
+
+/**
+ * retrieveGroups(), then iterate through them looking for ALL_STUDENTS_GROUP.
+ * Once found, return its groupId.
+ * @returns number
+ */
+function getAllStudentsGroupId() {
+    let groupId = null;
+
+    const groups = retrieveGroups();
+    for (let i = 0; i < groups.length; i++) {
+        if (groups[i].attributes.name == ALL_STUDENTS_GROUP) {
+            groupId = groups[i].id;
+            break;
+        }
+    }
+
+    return groupId;
 }
 
 /**
@@ -301,13 +536,15 @@ class SheetData {
  * Properties are in both dot and [] notation.
  */
 class MDMData {
-  constructor(deviceId, deviceName, serialNumber) {
-    this.deviceId = deviceId;
-    this.deviceName = deviceName;
-    this.serialNumber = serialNumber;
-    this[DEVICE_ID_NAME] = deviceId;
-    this[DEVICE_NAME_NAME] = deviceName;
-    this[SERIAL_NUMBER_NAME] = serialNumber;
+  constructor(device) {
+    this.deviceId = device.id;
+    this.deviceName = device.attributes.name;
+    this.serialNumber = device.attributes.serial_number;
+    this[DEVICE_ID_NAME] = this.deviceId;
+    this[DEVICE_NAME_NAME] = this.deviceName;
+    this[SERIAL_NUMBER_NAME] = this.serialNumber;
+    //Array of groupIds assigned to device.
+    this.groupIds = device.relationships.groups.data.map(groupData => groupData.id);
   }
 }
 
